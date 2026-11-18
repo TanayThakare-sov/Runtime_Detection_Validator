@@ -1,0 +1,33 @@
+// tracer.bt - minimal eBPF sensor (bpftrace)
+// Watches three syscalls and prints one pipe-delimited line per event:
+//   EXEC|pid|comm|filename|argv...
+//   OPEN|pid|comm|path
+//   CONN|pid|comm|ip|port
+#include <linux/socket.h>
+#include <netinet/in.h>
+
+BEGIN { printf("READY|0|sensor|started\n"); }
+
+// 1) Process execution (e.g. a shell being spawned)
+tracepoint:syscalls:sys_enter_execve
+{
+    printf("EXEC|%d|%s|%s|", pid, comm, str(args->filename));
+    join(args->argv);   // prints argv separated by spaces, then newline
+}
+
+// 2) Opening sensitive files (filtered, otherwise the output would flood)
+tracepoint:syscalls:sys_enter_openat
+/ str(args->filename) == "/etc/shadow" || str(args->filename) == "/etc/passwd" /
+{
+    printf("OPEN|%d|%s|%s\n", pid, comm, str(args->filename));
+}
+
+// 3) Outbound IPv4 connections
+tracepoint:syscalls:sys_enter_connect
+{
+    $sa = (struct sockaddr *)args->uservaddr;
+    if ($sa->sa_family == AF_INET) {
+        $in = (struct sockaddr_in *)args->uservaddr;
+        printf("CONN|%d|%s|%s|%d\n", pid, comm, ntop($in->sin_addr.s_addr), bswap($in->sin_port));
+    }
+}
